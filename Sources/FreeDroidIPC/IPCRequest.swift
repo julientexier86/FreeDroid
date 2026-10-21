@@ -7,6 +7,7 @@ public enum IPCRequest: Codable, Sendable {
     case read(deviceID: DeviceID, path: RemotePath, offset: Int64, length: Int)
     case write(deviceID: DeviceID, path: RemotePath, data: Data, offset: Int64)
     case fetchData(deviceID: DeviceID, path: RemotePath)
+    case fetchFile(deviceID: DeviceID, path: RemotePath, destinationPath: String, progressPath: String)
     case uploadData(deviceID: DeviceID, path: RemotePath, data: Data)
     case mkdir(deviceID: DeviceID, path: RemotePath)
     case remove(deviceID: DeviceID, path: RemotePath)

@@ -84,7 +84,9 @@ final class AppContainer {
             renameFile: RenameFileUseCase(fileRepository: fileRepo),
             deleteFiles: DeleteFilesUseCase(fileRepository: fileRepo),
             createFolder: CreateFolderUseCase(fileRepository: fileRepo),
-            downloadToTemp: DownloadToTempUseCase(fileRepository: fileRepo)
+            downloadToTemp: DownloadToTempUseCase(fileRepository: fileRepo),
+            uploadFile: UploadFileUseCase(fileRepository: fileRepo),
+            deviceID: deviceID
         )
     }
 

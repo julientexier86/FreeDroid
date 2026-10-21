@@ -67,7 +67,9 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
         return progress
     }
 
-    private struct MaterializeResult {
+    // The provider item is immutable after construction and is only passed from
+    // the actor-isolated fetch gate back to the provider callback.
+    private struct MaterializeResult: @unchecked Sendable {
         let url: URL
         let item: ProviderItem
     }
@@ -96,7 +98,7 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
             return MaterializeResult(url: cachedURL, item: ProviderItem(entry: entry, parent: parent))
         }
         let tempURL = IPCEndpoint.newTransferURL(filenameExtension: ext)
-        try await transport.fetch(path, into: tempURL)
+        try await transport.fetch(path, into: tempURL, progress: progress)
         let finalSize = Self.fileSize(at: tempURL)
         if progress.totalUnitCount < 0 { progress.totalUnitCount = finalSize }
         progress.completedUnitCount = finalSize

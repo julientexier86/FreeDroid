@@ -119,14 +119,43 @@ public actor ADBSession: Transport {
     }
 
     public func write(_ path: RemotePath, data: Data, offset: Int64) async throws {
-        guard offset == 0 else {
-            throw TransportError.unsupported(reason: "ADB push does not support offset writes")
+        guard offset >= 0 else {
+            throw TransportError.ioFailure(message: "Negative write offset")
+        }
+        if offset > 0 {
+            // File Provider may stream a file in several writes. ADB sync's
+            // push operation replaces the destination, so merge the range
+            // locally and send the complete result back to the device.
+            var merged = Data()
+            do {
+                let current = try await stat(path)
+                if let size = current.sizeBytes, size > 0 {
+                    merged = try await read(path, offset: 0, length: Int(size))
+                }
+            } catch TransportError.notFound {
+                merged = Data()
+            }
+            let start = Int(offset)
+            if merged.count < start {
+                merged.append(Data(repeating: 0, count: start - merged.count))
+            }
+            let end = start + data.count
+            if merged.count < end {
+                merged.append(Data(repeating: 0, count: end - merged.count))
+            }
+            merged.replaceSubrange(start..<end, with: data)
+            try await write(path, data: merged, offset: 0)
+            return
         }
         try await withWireFallback(op: "write", path: path.raw) {
             try await self.wireWrite(path, data: data)
         } legacy: {
             try await self.legacyWrite(path, data: data)
         }
+        // Finder writes through this path. Notify Android's MediaProvider so
+        // Quest file/media pickers refresh instead of waiting for a reboot or
+        // a manual rescan.
+        await rescanMediaStore(path: path)
     }
 
     public func mkdir(_ path: RemotePath) async throws {
@@ -260,17 +289,31 @@ public actor ADBSession: Transport {
             }
             return try await syncClient.listV1(remotePath: path.raw)
         }
-        return entries.map { entry in
-            let kind: EntryKind = entry.isDirectory ? .directory : (entry.isSymlink ? .symlink : .file)
-            return RemoteEntry(
-                path: path.appending(entry.name),
+        var result: [RemoteEntry] = []
+        result.reserveCapacity(entries.count)
+        for entry in entries {
+            let childPath = path.appending(entry.name)
+            let kind: EntryKind
+            if entry.isDirectory {
+                kind = .directory
+            } else if entry.isSymlink {
+                // Android commonly exposes /sdcard as a symlink to the user
+                // storage directory. File Provider must see the target kind,
+                // otherwise Finder treats it as a tiny, unreadable document.
+                kind = await symlinkKind(at: childPath)
+            } else {
+                kind = .file
+            }
+            result.append(RemoteEntry(
+                path: childPath,
                 name: entry.name,
                 kind: kind,
-                sizeBytes: entry.isDirectory ? nil : Int64(bitPattern: entry.size),
+                sizeBytes: kind == .directory ? nil : Int64(bitPattern: entry.size),
                 modifiedAt: Date(timeIntervalSince1970: TimeInterval(entry.mtime)),
                 isHidden: entry.name.hasPrefix(".")
-            )
+            ))
         }
+        return result
     }
 
     private func wireStat(_ path: RemotePath) async throws -> RemoteEntry {
@@ -281,12 +324,19 @@ public actor ADBSession: Transport {
             }
             return try await syncClient.statV1(remotePath: path.raw)
         }
-        let kind: EntryKind = entry.isDirectory ? .directory : (entry.isSymlink ? .symlink : .file)
+        let kind: EntryKind
+        if entry.isDirectory {
+            kind = .directory
+        } else if entry.isSymlink {
+            kind = await symlinkKind(at: path)
+        } else {
+            kind = .file
+        }
         return RemoteEntry(
             path: path,
             name: path.name,
             kind: kind,
-            sizeBytes: entry.isDirectory ? nil : Int64(bitPattern: entry.size),
+            sizeBytes: kind == .directory ? nil : Int64(bitPattern: entry.size),
             modifiedAt: Date(timeIntervalSince1970: TimeInterval(entry.mtime)),
             isHidden: path.name.hasPrefix(".")
         )
@@ -385,6 +435,19 @@ public actor ADBSession: Transport {
         if lowered.contains("directory") { return .directory }
         if lowered.contains("symbolic") { return .symlink }
         return .file
+    }
+
+    private func symlinkKind(at path: RemotePath) async -> EntryKind {
+        let runner = await server.runner(for: serial)
+        do {
+            let out = try await runner.run(
+                .shell(serial: serial, script: "test -d \(escape(path.raw)) && echo directory || echo other"),
+                timeout: .seconds(5)
+            )
+            return out.stdout.contains("directory") ? .directory : .symlink
+        } catch {
+            return .symlink
+        }
     }
 
     private func legacyStatViaList(_ path: RemotePath) async throws -> RemoteEntry {

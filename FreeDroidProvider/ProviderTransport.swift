@@ -58,15 +58,50 @@ final class ProviderTransport: @unchecked Sendable {
         )
     }
 
-    func fetch(_ path: RemotePath, into destination: URL) async throws {
-        let data = try await send(
-            .fetchData(deviceID: deviceID, path: path),
-            expecting: Data.self
-        )
+    func fetch(_ path: RemotePath, into destination: URL, progress: Progress? = nil) async throws {
+        let sharedRoot = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.com.merkost.freedroid"
+        ) ?? FileManager.default.temporaryDirectory
+        let transferRoot = sharedRoot.appendingPathComponent("FreeDroidTransfers", isDirectory: true)
+        try FileManager.default.createDirectory(at: transferRoot, withIntermediateDirectories: true)
+        let token = UUID().uuidString
+        let staging = transferRoot.appendingPathComponent("fetch-\(token).data")
+        let progressURL = transferRoot.appendingPathComponent("fetch-\(token).progress")
+        defer {
+            try? FileManager.default.removeItem(at: staging)
+            try? FileManager.default.removeItem(at: progressURL)
+        }
+
+        let request = Task {
+            try await send(
+                .fetchFile(
+                    deviceID: deviceID,
+                    path: path,
+                    destinationPath: staging.path,
+                    progressPath: progressURL.path
+                ),
+                expecting: Data.self
+            )
+        }
+        let monitor = Task {
+            while !Task.isCancelled {
+            if let line = try? String(contentsOf: progressURL, encoding: .utf8) {
+                let values = line.split(separator: "/").compactMap { Int64($0) }
+                if let completed = values.first {
+                    if values.count > 1, values[1] >= 0 { progress?.totalUnitCount = values[1] }
+                    progress?.completedUnitCount = completed
+                }
+            }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+        }
+        defer { monitor.cancel() }
+        _ = try await request.value
+
         let parent = destination.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: destination)
-        try data.write(to: destination)
+        try FileManager.default.copyItem(at: staging, to: destination)
     }
 
     func upload(from source: URL, to path: RemotePath) async throws {
