@@ -166,6 +166,12 @@ public actor TransferQueue {
                     total += size
                 }
             }
+            if let free = try? await engine.transport.info.storageFreeBytes,
+               total > free {
+                throw TransportError.ioFailure(
+                    message: "Not enough Quest storage: (total - free) bytes missing"
+                )
+            }
             return total
         }
     }
