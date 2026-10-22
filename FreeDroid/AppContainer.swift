@@ -80,6 +80,16 @@ final class AppContainer {
         try await registry.installAPK(from: source, on: deviceID)
     }
 
+    func uploadFiles(_ urls: [URL], to deviceIDs: Set<DeviceID>) async throws {
+        for deviceID in deviceIDs {
+            let fileRepo = FileRepositoryImpl(registry: registry, cache: listingCache, deviceID: deviceID)
+            let uploader = UploadFileUseCase(fileRepository: fileRepo)
+            for url in urls {
+                try await uploader(source: url, destinationFolder: RemotePath(raw: "/sdcard/Download"))
+            }
+        }
+    }
+
     func diagnose(_ deviceID: DeviceID) async -> [DiagnosticCheck] {
         var checks: [DiagnosticCheck] = []
         guard let device = await registry.device(deviceID),

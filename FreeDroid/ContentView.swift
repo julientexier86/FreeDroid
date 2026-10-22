@@ -18,6 +18,7 @@ struct ContentView: View {
     @State private var actionError: String?
     @State private var diagnosticChecks: [DiagnosticCheck] = []
     @State private var showingDiagnostics = false
+    @State private var isImportingMultiDevice = false
 
     enum DetailTab: Hashable { case files, gallery }
 
@@ -116,6 +117,20 @@ struct ContentView: View {
         } message: {
             Text(actionError ?? "")
         }
+        .fileImporter(
+            isPresented: $isImportingMultiDevice,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            guard case .success(let urls) = result else { return }
+            Task {
+                do {
+                    try await container.uploadFiles(urls, to: container.deviceListViewModel.selectedIDs)
+                } catch {
+                    actionError = String(describing: error)
+                }
+            }
+        }
         .sheet(isPresented: $showingDiagnostics) {
             DiagnosticSheet(checks: diagnosticChecks)
                 .padding(Spacing.xl)
@@ -135,6 +150,14 @@ struct ContentView: View {
                 .font(.system(size: 17, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.colors.text0)
             Spacer()
+            if container.deviceListViewModel.selectedIDs.count > 1 {
+                Button {
+                    isImportingMultiDevice = true
+                } label: {
+                    Label("Send to \(container.deviceListViewModel.selectedIDs.count) Quests", systemImage: "square.and.arrow.down.on.square")
+                }
+                .buttonStyle(.bordered)
+            }
             Text("v\(container.bundleVersion)")
                 .font(Typography.caption)
                 .foregroundStyle(theme.colors.text2)
