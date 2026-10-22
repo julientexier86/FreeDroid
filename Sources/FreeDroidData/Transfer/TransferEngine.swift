@@ -20,6 +20,10 @@ public struct TransferEngine: Sendable {
         }
         let entry = try await transport.stat(path)
         let total = entry.sizeBytes ?? 0
+        if let localSize = (try? FileManager.default.attributesOfItem(atPath: localURL.path)[.size] as? NSNumber)?.int64Value,
+           localSize == total {
+            return total
+        }
         FileManager.default.createFile(atPath: localURL.path, contents: nil)
         let handle = try FileHandle(forWritingTo: localURL)
         defer { try? handle.close() }
@@ -41,6 +45,9 @@ public struct TransferEngine: Sendable {
         try Task.checkCancellation()
         let attributes = try FileManager.default.attributesOfItem(atPath: localURL.path)
         let expected = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        if let existing = try? await transport.stat(remote), existing.kind == .file, existing.sizeBytes == expected {
+            return expected
+        }
         let bytes = try await transport.upload(from: localURL, to: remote, progress: progress)
         let remoteSize = (try await transport.stat(remote)).sizeBytes ?? -1
         guard remoteSize == expected, bytes == expected else {
