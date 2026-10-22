@@ -95,7 +95,10 @@ final class ProviderTransport: @unchecked Sendable {
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
-        defer { monitor.cancel() }
+        defer {
+            monitor.cancel()
+            if Task.isCancelled { request.cancel() }
+        }
         _ = try await request.value
 
         let parent = destination.deletingLastPathComponent()

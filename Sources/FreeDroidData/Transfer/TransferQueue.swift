@@ -138,7 +138,7 @@ public actor TransferQueue {
                 index += 1
                 inFlight += 1
                 group.addTask {
-                    let bytes = try await worker(item)
+                    let bytes = try await self.withRetry { try await worker(item) }
                     return (item, bytes)
                 }
             }
@@ -159,6 +159,21 @@ public actor TransferQueue {
             }
         }
         return copied
+    }
+
+    private func withRetry<T>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        var attempt = 0
+        while true {
+            do {
+                return try await operation()
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as TransportError where error.isRetryable && attempt < 3 {
+                let delay = Duration.milliseconds(500 * Int64(1 << attempt))
+                attempt += 1
+                try await Task.sleep(for: delay)
+            }
+        }
     }
 
     private func makeWorker(for job: TransferJob, engine: TransferEngine) -> @Sendable (RemotePath) async throws -> Int64 {

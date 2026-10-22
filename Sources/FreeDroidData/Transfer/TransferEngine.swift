@@ -14,7 +14,9 @@ public struct TransferEngine: Sendable {
         try Task.checkCancellation()
         if transport.capabilities.supportsRangeRead == false {
             try? FileManager.default.removeItem(at: localURL)
-            return try await transport.fetch(path, into: localURL, progress: nil)
+            let bytes = try await transport.fetch(path, into: localURL, progress: nil)
+            try verifyLocalSize(localURL, expected: bytes)
+            return bytes
         }
         let entry = try await transport.stat(path)
         let total = entry.sizeBytes ?? 0
@@ -30,16 +32,31 @@ public struct TransferEngine: Sendable {
             offset += Int64(chunk.count)
             if chunk.isEmpty { break }
         }
+        try verifyLocalSize(localURL, expected: offset)
         return offset
     }
 
     public func push(localURL: URL, to remote: RemotePath) async throws -> Int64 {
         try Task.checkCancellation()
-        if transport.capabilities.supportsRangeWrite == false {
-            return try await transport.upload(from: localURL, to: remote, progress: nil)
+        let attributes = try FileManager.default.attributesOfItem(atPath: localURL.path)
+        let expected = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        let bytes = try await transport.upload(from: localURL, to: remote, progress: nil)
+        let remoteSize = (try await transport.stat(remote)).sizeBytes ?? -1
+        guard remoteSize == expected, bytes == expected else {
+            throw TransportError.ioFailure(
+                message: "Transfer verification failed for \(remote.raw): expected \(expected) bytes, got \(remoteSize)"
+            )
         }
-        let data = try Data(contentsOf: localURL)
-        try await transport.write(remote, data: data, offset: 0)
-        return Int64(data.count)
+        return bytes
+    }
+
+    private func verifyLocalSize(_ url: URL, expected: Int64) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let actual = (attributes[.size] as? NSNumber)?.int64Value ?? -1
+        guard actual == expected else {
+            throw TransportError.ioFailure(
+                message: "Transfer verification failed for \(url.lastPathComponent): expected \(expected) bytes, got \(actual)"
+            )
+        }
     }
 }
