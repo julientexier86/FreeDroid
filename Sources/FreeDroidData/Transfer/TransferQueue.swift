@@ -2,6 +2,14 @@ import Foundation
 import FreeDroidDomain
 
 public actor TransferQueue {
+    private struct ItemProgressSink: TransferProgressSink, Sendable {
+        let callback: @Sendable (Int64, Int64?) -> Void
+
+        func report(bytesTransferred: Int64, totalBytes: Int64?) {
+            callback(bytesTransferred, totalBytes)
+        }
+    }
+
     private struct ActiveJob {
         let job: TransferJob
         var task: Task<Void, Never>
@@ -11,6 +19,7 @@ public actor TransferQueue {
     private var stateSubscribers: [AsyncStream<[TransferState]>.Continuation] = []
     private var jobStates: [UUID: TransferState] = [:]
     private var historyEntries: [TransferHistoryEntry] = TransferQueue.loadHistory()
+    private var itemProgress: [UUID: [RemotePath: Int64]] = [:]
     private let maxParallelPerDevice: Int
 
     public init(maxParallelPerDevice: Int = TransferQueue.defaultParallelism()) {
@@ -61,6 +70,7 @@ public actor TransferQueue {
         do {
             let total = try await computeTotal(job: job, engine: engine)
             let copied = try await runParallel(job: job, engine: engine, total: total, continuation: continuation)
+            itemProgress[job.id] = nil
             publishRunning(job.id, completed: copied, total: total, current: nil)
             jobStates[job.id] = .completed
             appendHistory(job: job, bytes: copied, startedAt: startedAt, result: .completed)
@@ -69,6 +79,7 @@ public actor TransferQueue {
         } catch {
             jobStates[job.id] = mapFailure(error)
             let result: TransferHistoryEntry.Result = error is CancellationError ? .cancelled : .failed
+            itemProgress[job.id] = nil
             appendHistory(job: job, bytes: 0, startedAt: startedAt, result: result, message: String(describing: error))
             publish()
             continuation.finish(throwing: error)
@@ -179,7 +190,10 @@ public actor TransferQueue {
                 index += 1
                 inFlight += 1
                 group.addTask {
-                    let bytes = try await self.withRetry { try await worker(item) }
+                    let sink = ItemProgressSink { bytes, _ in
+                        Task { await self.report(jobID: job.id, item: item, bytes: bytes, total: total, continuation: continuation) }
+                    }
+                    let bytes = try await self.withRetry { try await worker(item, sink) }
                     return (item, bytes)
                 }
             }
@@ -217,16 +231,25 @@ public actor TransferQueue {
         }
     }
 
-    private func makeWorker(for job: TransferJob, engine: TransferEngine) -> @Sendable (RemotePath) async throws -> Int64 {
+    private func report(jobID: UUID, item: RemotePath, bytes: Int64, total: Int64, continuation: AsyncThrowingStream<TransferProgress, Error>.Continuation) {
+        var values = itemProgress[jobID] ?? [:]
+        values[item] = bytes
+        itemProgress[jobID] = values
+        let completed = values.values.reduce(0, +)
+        publishRunning(jobID, completed: completed, total: total, current: item)
+        continuation.yield(TransferProgress(jobID: jobID, completedBytes: completed, totalBytes: total, currentItem: item, bytesPerSecond: 0))
+    }
+
+    private func makeWorker(for job: TransferJob, engine: TransferEngine) -> @Sendable (RemotePath, TransferProgressSink?) async throws -> Int64 {
         let destination = job.destination
         switch job.direction {
         case .toMac:
-            return { item in
-                try await engine.pull(item, to: destination.appendingPathComponent(item.name))
+            return { item, progress in
+                try await engine.pull(item, to: destination.appendingPathComponent(item.name), progress: progress)
             }
         case .toDevice:
-            return { item in
-                try await engine.push(localURL: destination.appendingPathComponent(item.name), to: item)
+            return { item, progress in
+                try await engine.push(localURL: destination.appendingPathComponent(item.name), to: item, progress: progress)
             }
         }
     }

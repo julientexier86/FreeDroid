@@ -10,11 +10,11 @@ public struct TransferEngine: Sendable {
         self.chunkSize = chunkSize
     }
 
-    public func pull(_ path: RemotePath, to localURL: URL) async throws -> Int64 {
+    public func pull(_ path: RemotePath, to localURL: URL, progress: TransferProgressSink? = nil) async throws -> Int64 {
         try Task.checkCancellation()
         if transport.capabilities.supportsRangeRead == false {
             try? FileManager.default.removeItem(at: localURL)
-            let bytes = try await transport.fetch(path, into: localURL, progress: nil)
+            let bytes = try await transport.fetch(path, into: localURL, progress: progress)
             try verifyLocalSize(localURL, expected: bytes)
             return bytes
         }
@@ -30,17 +30,18 @@ public struct TransferEngine: Sendable {
             let chunk = try await transport.read(path, offset: offset, length: length)
             try handle.write(contentsOf: chunk)
             offset += Int64(chunk.count)
+            progress?.report(bytesTransferred: offset, totalBytes: total)
             if chunk.isEmpty { break }
         }
         try verifyLocalSize(localURL, expected: offset)
         return offset
     }
 
-    public func push(localURL: URL, to remote: RemotePath) async throws -> Int64 {
+    public func push(localURL: URL, to remote: RemotePath, progress: TransferProgressSink? = nil) async throws -> Int64 {
         try Task.checkCancellation()
         let attributes = try FileManager.default.attributesOfItem(atPath: localURL.path)
         let expected = (attributes[.size] as? NSNumber)?.int64Value ?? 0
-        let bytes = try await transport.upload(from: localURL, to: remote, progress: nil)
+        let bytes = try await transport.upload(from: localURL, to: remote, progress: progress)
         let remoteSize = (try await transport.stat(remote)).sizeBytes ?? -1
         guard remoteSize == expected, bytes == expected else {
             throw TransportError.ioFailure(
