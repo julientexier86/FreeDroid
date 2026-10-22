@@ -10,6 +10,7 @@ public actor TransferQueue {
     private var active: [UUID: ActiveJob] = [:]
     private var stateSubscribers: [AsyncStream<[TransferState]>.Continuation] = []
     private var jobStates: [UUID: TransferState] = [:]
+    private var historyEntries: [TransferHistoryEntry] = TransferQueue.loadHistory()
     private let maxParallelPerDevice: Int
 
     public init(maxParallelPerDevice: Int = TransferQueue.defaultParallelism()) {
@@ -43,25 +44,65 @@ public actor TransferQueue {
         }
     }
 
+    public func history() -> [TransferHistoryEntry] { historyEntries }
+
+    public func clearHistory() {
+        historyEntries.removeAll()
+        saveHistory()
+    }
+
     private func start(
         job: TransferJob,
         engine: TransferEngine,
         continuation: AsyncThrowingStream<TransferProgress, Error>.Continuation
     ) async {
+        let startedAt = Date()
         publishRunning(job.id, completed: 0, total: 0, current: nil)
         do {
             let total = try await computeTotal(job: job, engine: engine)
             let copied = try await runParallel(job: job, engine: engine, total: total, continuation: continuation)
             publishRunning(job.id, completed: copied, total: total, current: nil)
             jobStates[job.id] = .completed
+            appendHistory(job: job, bytes: copied, startedAt: startedAt, result: .completed)
             publish()
             continuation.finish()
         } catch {
             jobStates[job.id] = mapFailure(error)
+            let result: TransferHistoryEntry.Result = error is CancellationError ? .cancelled : .failed
+            appendHistory(job: job, bytes: 0, startedAt: startedAt, result: result, message: String(describing: error))
             publish()
             continuation.finish(throwing: error)
         }
         active[job.id] = nil
+    }
+
+    private func appendHistory(job: TransferJob, bytes: Int64, startedAt: Date, result: TransferHistoryEntry.Result, message: String? = nil) {
+        historyEntries.insert(TransferHistoryEntry(
+            deviceID: job.deviceID,
+            direction: job.direction,
+            itemCount: job.items.count,
+            bytes: bytes,
+            startedAt: startedAt,
+            finishedAt: Date(),
+            result: result,
+            message: message
+        ), at: 0)
+        historyEntries = Array(historyEntries.prefix(100))
+        saveHistory()
+    }
+
+    private func saveHistory() {
+        let defaults = UserDefaults(suiteName: "group.com.merkost.freedroid") ?? .standard
+        if let data = try? JSONEncoder().encode(historyEntries) {
+            defaults.set(data, forKey: "FreeDroid.TransferHistory.v1")
+        }
+    }
+
+    private static func loadHistory() -> [TransferHistoryEntry] {
+        let defaults = UserDefaults(suiteName: "group.com.merkost.freedroid") ?? .standard
+        guard let data = defaults.data(forKey: "FreeDroid.TransferHistory.v1"),
+              let entries = try? JSONDecoder().decode([TransferHistoryEntry].self, from: data) else { return [] }
+        return entries
     }
 
     private func mapFailure(_ error: Error) -> TransferState {
