@@ -80,6 +80,84 @@ final class AppContainer {
         try await registry.installAPK(from: source, on: deviceID)
     }
 
+    func diagnose(_ deviceID: DeviceID) async -> [DiagnosticCheck] {
+        var checks: [DiagnosticCheck] = []
+        guard let device = await registry.device(deviceID),
+              let transport = await registry.transport(for: deviceID) else {
+            return [DiagnosticCheck(
+                id: "connection",
+                title: "Device connection",
+                detail: "Device is no longer available.",
+                status: .failed
+            )]
+        }
+        checks.append(DiagnosticCheck(
+            id: "connection",
+            title: "Device connection",
+            detail: "(device.displayName) is connected via (device.transport).",
+            status: device.connectionState == .ready ? .passed : .warning
+        ))
+        do {
+            let info = try await transport.info
+            let version = info.androidVersion ?? "unknown Android version"
+            checks.append(DiagnosticCheck(
+                id: "adb",
+                title: "ADB communication",
+                detail: "(info.model), (version).",
+                status: .passed
+            ))
+            if let capacity = info.storageCapacityBytes, let free = info.storageFreeBytes {
+                let formatter = ByteCountFormatter()
+                checks.append(DiagnosticCheck(
+                    id: "storage",
+                    title: "Storage",
+                    detail: "(formatter.string(fromByteCount: free)) free of (formatter.string(fromByteCount: capacity)).",
+                    status: free > 256 * 1024 * 1024 ? .passed : .warning
+                ))
+            }
+        } catch {
+            checks.append(DiagnosticCheck(
+                id: "adb",
+                title: "ADB communication",
+                detail: String(describing: error),
+                status: .failed
+            ))
+        }
+        do {
+            _ = try await transport.list(RemotePath(raw: "/sdcard"))
+            checks.append(DiagnosticCheck(
+                id: "storage-access",
+                title: "User storage access",
+                detail: "The Quest storage root is readable.",
+                status: .passed
+            ))
+        } catch {
+            checks.append(DiagnosticCheck(
+                id: "storage-access",
+                title: "User storage access",
+                detail: String(describing: error),
+                status: .failed
+            ))
+        }
+        do {
+            _ = try await transport.list(RemotePath(raw: "/sdcard/Download"))
+            checks.append(DiagnosticCheck(
+                id: "download",
+                title: "Download folder",
+                detail: "Download is accessible and ready for transfers.",
+                status: .passed
+            ))
+        } catch {
+            checks.append(DiagnosticCheck(
+                id: "download",
+                title: "Download folder",
+                detail: "Download is not readable: \(error)",
+                status: .warning
+            ))
+        }
+        return checks
+    }
+
     func fileBrowserViewModel(for deviceID: DeviceID) -> FileBrowserViewModel {
         let fileRepo = FileRepositoryImpl(registry: registry, cache: listingCache, deviceID: deviceID)
         return FileBrowserViewModel(

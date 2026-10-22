@@ -16,6 +16,8 @@ struct ContentView: View {
     @State private var wifiPairVM = WifiPairSheetViewModel()
     @State private var isImportingAPK = false
     @State private var actionError: String?
+    @State private var diagnosticChecks: [DiagnosticCheck] = []
+    @State private var showingDiagnostics = false
 
     enum DetailTab: Hashable { case files, gallery }
 
@@ -114,6 +116,11 @@ struct ContentView: View {
         } message: {
             Text(actionError ?? "")
         }
+        .sheet(isPresented: $showingDiagnostics) {
+            DiagnosticSheet(checks: diagnosticChecks)
+                .padding(Spacing.xl)
+                .frame(width: 520, height: 420)
+        }
     }
 
     private var appHeader: some View {
@@ -187,6 +194,15 @@ struct ContentView: View {
                     Label("Install APK", systemImage: "shippingbox")
                 }
                 .buttonStyle(.bordered)
+                Button {
+                    Task {
+                        diagnosticChecks = await container.diagnose(selectedID)
+                        showingDiagnostics = true
+                    }
+                } label: {
+                    Label("Diagnose", systemImage: "stethoscope")
+                }
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, Spacing.lg)
             .padding(.vertical, Spacing.md)
@@ -233,5 +249,49 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct DiagnosticSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let checks: [DiagnosticCheck]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            Text("Quest diagnostic")
+                .font(.title2.weight(.semibold))
+            List(checks) { check in
+                HStack(alignment: .top, spacing: Spacing.sm) {
+                    Image(systemName: icon(for: check.status))
+                        .foregroundStyle(color(for: check.status))
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(check.title).font(.headline)
+                        Text(check.detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 3)
+            }
+            HStack {
+                Spacer()
+                Button("Close") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+
+    private func icon(for status: DiagnosticCheck.Status) -> String {
+        switch status {
+        case .passed: "checkmark.circle.fill"
+        case .warning: "exclamationmark.triangle.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    private func color(for status: DiagnosticCheck.Status) -> Color {
+        switch status {
+        case .passed: .green
+        case .warning: .orange
+        case .failed: .red
+        }
     }
 }
