@@ -10,6 +10,15 @@ import FileBrowser
 import Gallery
 import Transfer
 
+struct StorageCandidate: Identifiable, Hashable {
+    let id: RemotePath
+    let path: RemotePath
+    let sizeBytes: Int64
+    let modifiedAt: Date?
+
+    var name: String { path.name }
+}
+
 @MainActor
 @Observable
 final class AppContainer {
@@ -166,6 +175,41 @@ final class AppContainer {
             ))
         }
         return checks
+    }
+
+    func storageCandidates(for deviceID: DeviceID, limit: Int = 200) async throws -> [StorageCandidate] {
+        guard let transport = await registry.transport(for: deviceID) else {
+            throw TransportError.notFound(RemotePath(raw: deviceID.raw))
+        }
+        let roots = ["Download", "Movies", "Pictures", "DCIM"].map { RemotePath(raw: "/sdcard/\($0)") }
+        var candidates: [StorageCandidate] = []
+        var queue = roots.map { ($0, 0) }
+        var visited = Set<RemotePath>()
+        while let (folder, depth) = queue.popLast(), candidates.count < limit * 4 {
+            guard visited.insert(folder).inserted, depth <= 6 else { continue }
+            for entry in try await transport.list(folder) {
+                guard !entry.isHidden else { continue }
+                switch entry.kind {
+                case .directory:
+                    if depth < 6 { queue.append((entry.path, depth + 1)) }
+                case .file:
+                    candidates.append(StorageCandidate(id: entry.path, path: entry.path, sizeBytes: entry.sizeBytes ?? 0, modifiedAt: entry.modifiedAt))
+                case .symlink:
+                    continue
+                }
+            }
+        }
+        return Array(candidates.sorted { $0.sizeBytes > $1.sizeBytes }.prefix(limit))
+    }
+
+    func deleteStorageCandidates(_ candidates: [StorageCandidate], on deviceID: DeviceID) async throws {
+        guard let transport = await registry.transport(for: deviceID) else {
+            throw TransportError.notFound(RemotePath(raw: deviceID.raw))
+        }
+        for candidate in candidates {
+            guard ["/sdcard/Download/", "/sdcard/Movies/", "/sdcard/Pictures/", "/sdcard/DCIM/"].contains(where: { candidate.path.raw.hasPrefix($0) }) else { continue }
+            try await transport.remove(candidate.path)
+        }
     }
 
     func fileBrowserViewModel(for deviceID: DeviceID) -> FileBrowserViewModel {

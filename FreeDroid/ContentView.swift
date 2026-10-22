@@ -19,6 +19,7 @@ struct ContentView: View {
     @State private var diagnosticChecks: [DiagnosticCheck] = []
     @State private var showingDiagnostics = false
     @State private var isImportingMultiDevice = false
+    @State private var showingStorageCleaner = false
 
     enum DetailTab: Hashable { case files, gallery }
 
@@ -136,6 +137,13 @@ struct ContentView: View {
                 .padding(Spacing.xl)
                 .frame(width: 520, height: 420)
         }
+        .sheet(isPresented: $showingStorageCleaner) {
+            if let selectedID = container.deviceListViewModel.selectedID {
+                StorageCleanerSheet(deviceID: selectedID, container: container)
+                    .padding(Spacing.xl)
+                    .frame(width: 680, height: 560)
+            }
+        }
     }
 
     private var appHeader: some View {
@@ -226,6 +234,12 @@ struct ContentView: View {
                     Label("Diagnose", systemImage: "stethoscope")
                 }
                 .buttonStyle(.bordered)
+                Button {
+                    showingStorageCleaner = true
+                } label: {
+                    Label("Clean storage", systemImage: "externaldrive.badge.xmark")
+                }
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, Spacing.lg)
             .padding(.vertical, Spacing.md)
@@ -272,6 +286,114 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct StorageCleanerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let deviceID: DeviceID
+    let container: AppContainer
+    @State private var candidates: [StorageCandidate] = []
+    @State private var selected = Set<RemotePath>()
+    @State private var isLoading = true
+    @State private var errorMessage: String?
+    @State private var showingConfirmation = false
+
+    private var selectedCandidates: [StorageCandidate] { candidates.filter { selected.contains($0.path) } }
+    private var selectedBytes: Int64 { selectedCandidates.reduce(0) { $0 + $1.sizeBytes } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Spacing.md) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Quest storage cleaner").font(.title2.weight(.semibold))
+                    Text("Largest files in Download, Movies, Pictures and DCIM")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button("Refresh") { load() }
+            }
+            if isLoading {
+                ProgressView("Scanning Quest storage…").frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let errorMessage {
+                ContentUnavailableView("Storage scan failed", systemImage: "externaldrive.badge.xmark", description: Text(errorMessage))
+            } else if candidates.isEmpty {
+                ContentUnavailableView("No user files found", systemImage: "checkmark.circle", description: Text("The scanned Quest folders are empty."))
+            } else {
+                List(candidates) { candidate in
+                    HStack(spacing: Spacing.sm) {
+                        Toggle("", isOn: Binding(
+                            get: { selected.contains(candidate.path) },
+                            set: { checked in
+                                if checked { selected.insert(candidate.path) } else { selected.remove(candidate.path) }
+                            }
+                        )).labelsHidden()
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(candidate.name).lineLimit(1)
+                            Text(candidate.path.raw).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer()
+                        Text(ByteCountFormatter.string(fromByteCount: candidate.sizeBytes, countStyle: .file))
+                            .font(.caption.monospacedDigit())
+                    }
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if selected.contains(candidate.path) { selected.remove(candidate.path) } else { selected.insert(candidate.path) }
+                    }
+                }
+            }
+            HStack {
+                Text(selected.isEmpty ? "Select files to remove" : "Selected: \(ByteCountFormatter.string(fromByteCount: selectedBytes, countStyle: .file))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Delete selected", role: .destructive) { showingConfirmation = true }
+                    .disabled(selected.isEmpty || isLoading)
+            }
+        }
+        .task { load() }
+        .confirmationDialog("Delete selected files from the Quest?", isPresented: $showingConfirmation, titleVisibility: .visible) {
+            Button("Delete \(selectedCandidates.count) files", role: .destructive) { deleteSelected() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently frees \(ByteCountFormatter.string(fromByteCount: selectedBytes, countStyle: .file)).")
+        }
+    }
+
+    private func load() {
+        isLoading = true
+        errorMessage = nil
+        Task {
+            do {
+                let result = try await container.storageCandidates(for: deviceID)
+                await MainActor.run {
+                    candidates = result
+                    selected.removeAll()
+                    isLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    errorMessage = String(describing: error)
+                    isLoading = false
+                }
+            }
+        }
+    }
+
+    private func deleteSelected() {
+        let deleting = selectedCandidates
+        isLoading = true
+        Task {
+            do {
+                try await container.deleteStorageCandidates(deleting, on: deviceID)
+                await MainActor.run { load() }
+            } catch {
+                await MainActor.run {
+                    errorMessage = String(describing: error)
+                    isLoading = false
+                }
+            }
+        }
     }
 }
 
