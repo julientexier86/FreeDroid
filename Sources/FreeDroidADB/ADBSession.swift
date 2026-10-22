@@ -234,6 +234,66 @@ public actor ADBSession: Transport {
         }
     }
 
+    /// Uploads a large file in durable chunks. A retry reuses the same remote
+    /// checkpoint directory when the source metadata is unchanged.
+    public func uploadResumable(from source: URL, to path: RemotePath, progress: (any TransferProgressSink)?) async throws -> Int64 {
+        try requireUserStoragePath(path)
+        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        let total = (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        guard total > 0 else { return try await upload(from: source, to: path, progress: progress) }
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let safeName = source.lastPathComponent.map { character -> Character in
+            character.isLetter || character.isNumber ? character : "-"
+        }
+        let checkpoint = RemotePath(raw: "/sdcard/.freedroid-resume-\(String(safeName))-\(Int64(modified))-\(total)")
+        try requireUserStoragePath(checkpoint)
+        try await mkdir(checkpoint)
+        let chunkSize = Int64(8 * 1024 * 1024)
+        let handle = try FileHandle(forReadingFrom: source)
+        defer { try? handle.close() }
+        var offset: Int64 = 0
+        var index = 0
+        while offset < total {
+            try Task.checkCancellation()
+            let length = Int(min(chunkSize, total - offset))
+            guard let data = try handle.read(upToCount: length), !data.isEmpty else { break }
+            let part = checkpoint.appending("part-\(index)")
+            let existingSize = (try? await stat(part))?.sizeBytes
+            if existingSize == Int64(data.count) {
+                offset += Int64(data.count)
+                progress?.report(bytesTransferred: offset, totalBytes: total)
+                index += 1
+                continue
+            }
+            let localPart = FileManager.default.temporaryDirectory
+                .appendingPathComponent("freedroid-part-\(UUID().uuidString)")
+            try data.write(to: localPart, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: localPart) }
+            _ = try await withWireFallback(op: "upload-resume", path: part.raw) {
+                try await self.wireUpload(from: localPart, to: part, progress: nil)
+            } legacy: {
+                try await self.legacyUpload(from: localPart, to: part, progress: nil)
+            }
+            offset += Int64(data.count)
+            progress?.report(bytesTransferred: offset, totalBytes: total)
+            index += 1
+        }
+        let assembled = checkpoint.appending("assembled")
+        try await runShell(
+            op: "assemble-resume",
+            command: "cat \(escape(checkpoint.raw))/part-* > \(escape(assembled.raw)) && mv \(escape(assembled.raw)) \(escape(path.raw))",
+            legacyTimeout: .seconds(120)
+        )
+        let finalSize = try await stat(path).sizeBytes ?? -1
+        guard finalSize == total else {
+            throw TransportError.ioFailure(message: "Resumed upload verification failed for \(path.raw)")
+        }
+        try? await remove(checkpoint)
+        await rescanMediaStore(path: path)
+        progress?.report(bytesTransferred: total, totalBytes: total)
+        return total
+    }
+
     private func requireUserStoragePath(_ path: RemotePath) throws {
         guard path.raw == "/sdcard" || path.raw.hasPrefix("/sdcard/") else {
             throw TransportError.unsupported(reason: "Write access is limited to /sdcard")
@@ -251,7 +311,7 @@ public actor ADBSession: Transport {
             timeout: .seconds(600)
         )
         let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? NSNumber)?.int64Value ?? 0
-        progress?(size, size)
+        progress?.report(bytesTransferred: size, totalBytes: size)
         return size
     }
 
@@ -263,7 +323,7 @@ public actor ADBSession: Transport {
             .push(serial: serial, local: source.path, remote: path.raw, compressed: compressed),
             timeout: .seconds(600)
         )
-        progress?(size, size)
+        progress?.report(bytesTransferred: size, totalBytes: size)
         return size
     }
 
@@ -410,13 +470,22 @@ public actor ADBSession: Transport {
         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
         try? FileManager.default.removeItem(at: destination)
         return try await syncPool.withConnection { syncClient in
-            try await syncClient.recv(remotePath: path.raw, to: destination, progress: progress)
+            let sink = Self.makeWireProgress(progress)
+            return try await syncClient.recv(remotePath: path.raw, to: destination, progress: sink)
         }
     }
 
     private func wireUpload(from source: URL, to path: RemotePath, progress: TransferProgressSink?) async throws -> Int64 {
         try await syncPool.withConnection { syncClient in
-            try await syncClient.send(from: source, remotePath: path.raw, progress: progress)
+            let sink = Self.makeWireProgress(progress)
+            return try await syncClient.send(from: source, remotePath: path.raw, progress: sink)
+        }
+    }
+
+    private static func makeWireProgress(_ progress: TransferProgressSink?) -> ADBSyncProgressSink? {
+        guard let progress else { return nil }
+        return { bytes, total in
+            progress.report(bytesTransferred: bytes, totalBytes: total)
         }
     }
 

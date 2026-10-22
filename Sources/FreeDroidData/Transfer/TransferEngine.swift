@@ -1,5 +1,6 @@
 import Foundation
 import FreeDroidDomain
+import FreeDroidADB
 
 public struct TransferEngine: Sendable {
     let transport: any Transport
@@ -48,7 +49,12 @@ public struct TransferEngine: Sendable {
         if let existing = try? await transport.stat(remote), existing.kind == .file, existing.sizeBytes == expected {
             return expected
         }
-        let bytes = try await transport.upload(from: localURL, to: remote, progress: progress)
+        let bytes: Int64
+        if let adb = transport as? ADBSession {
+            bytes = try await adb.uploadResumable(from: localURL, to: remote, progress: progress)
+        } else {
+            bytes = try await transport.upload(from: localURL, to: remote, progress: progress)
+        }
         let remoteSize = (try await transport.stat(remote)).sizeBytes ?? -1
         guard remoteSize == expected, bytes == expected else {
             throw TransportError.ioFailure(
