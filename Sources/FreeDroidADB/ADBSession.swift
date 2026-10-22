@@ -215,6 +215,25 @@ public actor ADBSession: Transport {
         return bytes
     }
 
+    public func installAPK(from source: URL) async throws {
+        let accessed = source.startAccessingSecurityScopedResource()
+        defer {
+            if accessed { source.stopAccessingSecurityScopedResource() }
+        }
+        guard FileManager.default.fileExists(atPath: source.path) else {
+            throw TransportError.notFound(RemotePath(raw: source.path))
+        }
+        let runner = await server.runner(for: serial)
+        do {
+            _ = try await runner.run(
+                .install(serial: serial, local: source.path),
+                timeout: .seconds(900)
+            )
+        } catch let error as ADBRunnerError {
+            throw TransportError.ioFailure(message: error.localizedDescription)
+        }
+    }
+
     private func requireUserStoragePath(_ path: RemotePath) throws {
         guard path.raw == "/sdcard" || path.raw.hasPrefix("/sdcard/") else {
             throw TransportError.unsupported(reason: "Write access is limited to /sdcard")

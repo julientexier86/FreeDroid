@@ -76,6 +76,10 @@ final class AppContainer {
         try await wifiCoordinator.disconnect(endpoint)
     }
 
+    func installAPK(from source: URL, on deviceID: DeviceID) async throws {
+        try await registry.installAPK(from: source, on: deviceID)
+    }
+
     func fileBrowserViewModel(for deviceID: DeviceID) -> FileBrowserViewModel {
         let fileRepo = FileRepositoryImpl(registry: registry, cache: listingCache, deviceID: deviceID)
         return FileBrowserViewModel(

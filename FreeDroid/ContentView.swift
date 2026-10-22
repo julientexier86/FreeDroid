@@ -5,6 +5,7 @@ import DeviceManagement
 import FileBrowser
 import Gallery
 import Transfer
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @Environment(AppContainer.self) private var container
@@ -13,6 +14,8 @@ struct ContentView: View {
     @State private var tab: DetailTab = .files
     @State private var showingWifiPair = false
     @State private var wifiPairVM = WifiPairSheetViewModel()
+    @State private var isImportingAPK = false
+    @State private var actionError: String?
 
     enum DetailTab: Hashable { case files, gallery }
 
@@ -88,6 +91,29 @@ struct ContentView: View {
                 }
             }
         }
+        .fileImporter(
+            isPresented: $isImportingAPK,
+            allowedContentTypes: [UTType(filenameExtension: "apk") ?? .data],
+            allowsMultipleSelection: false
+        ) { result in
+            guard case .success(let urls) = result, let url = urls.first,
+                  let selectedID = container.deviceListViewModel.selectedID else { return }
+            Task {
+                do {
+                    try await container.installAPK(from: url, on: selectedID)
+                } catch {
+                    actionError = String(describing: error)
+                }
+            }
+        }
+        .alert("FreeDroid", isPresented: Binding(
+            get: { actionError != nil },
+            set: { if !$0 { actionError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(actionError ?? "")
+        }
     }
 
     private var appHeader: some View {
@@ -155,6 +181,12 @@ struct ContentView: View {
                     tabs: [("Files", DetailTab.files), ("Gallery", DetailTab.gallery)]
                 )
                 Spacer()
+                Button {
+                    isImportingAPK = true
+                } label: {
+                    Label("Install APK", systemImage: "shippingbox")
+                }
+                .buttonStyle(.bordered)
             }
             .padding(.horizontal, Spacing.lg)
             .padding(.vertical, Spacing.md)

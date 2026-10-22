@@ -70,6 +70,10 @@ public struct FileBrowserView: View {
                 .padding(.horizontal, Spacing.lg)
                 .padding(.vertical, Spacing.sm)
 
+                destinationShortcuts
+                    .padding(.horizontal, Spacing.lg)
+                    .padding(.bottom, Spacing.sm)
+
                 Divider().overlay(theme.colors.line)
 
                 FileListHeader(sort: viewModel.sort, ascending: viewModel.sortAscending) { option in
@@ -99,6 +103,27 @@ public struct FileBrowserView: View {
             }
         }
         .motion(.smooth, value: viewModel.selection.count)
+    }
+
+    private var destinationShortcuts: some View {
+        HStack(spacing: Spacing.xs) {
+            ForEach([
+                ("Download", "arrow.down.circle", RemotePath(raw: "/sdcard/Download")),
+                ("Movies", "film", RemotePath(raw: "/sdcard/Movies")),
+                ("Pictures", "photo", RemotePath(raw: "/sdcard/Pictures")),
+                ("DCIM", "camera", RemotePath(raw: "/sdcard/DCIM"))
+            ], id: \.2) { item in
+                Button {
+                    Task { await viewModel.navigate(to: item.2) }
+                } label: {
+                    Label(item.0, systemImage: item.1)
+                        .font(Typography.caption)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+            Spacer()
+        }
     }
 
     @ViewBuilder
