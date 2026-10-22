@@ -192,11 +192,25 @@ public actor ADBSession: Transport {
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw TransportError.notFound(RemotePath(raw: source.path))
         }
-        let bytes = try await withWireFallback(op: "upload", path: path.raw) {
-            try await self.wireUpload(from: source, to: path, progress: progress)
-        } legacy: {
-            try await self.legacyUpload(from: source, to: path, progress: progress)
+        let temporary = (path.parent ?? .root).appending(".freedroid-(UUID().uuidString)-(path.name)")
+        try requireUserStoragePath(temporary)
+        var committed = false
+        defer {
+            if !committed { Task { try? await self.remove(temporary) } }
         }
+        let bytes = try await withWireFallback(op: "upload", path: temporary.raw) {
+            try await self.wireUpload(from: source, to: temporary, progress: progress)
+        } legacy: {
+            try await self.legacyUpload(from: source, to: temporary, progress: progress)
+        }
+        let temporarySize = try await stat(temporary).sizeBytes ?? -1
+        guard temporarySize == bytes else {
+            throw TransportError.ioFailure(
+                message: "Temporary upload verification failed for \(path.raw)"
+            )
+        }
+        try await rename(temporary, to: path)
+        committed = true
         await rescanMediaStore(path: path)
         return bytes
     }
