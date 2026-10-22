@@ -154,7 +154,7 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         nonisolated(unsafe) let handler = completionHandler
-        nonisolated(unsafe) let progress = Progress(totalUnitCount: 1)
+        nonisolated(unsafe) let progress = Progress(totalUnitCount: -1)
         let parentIdentifier = itemTemplate.parentItemIdentifier
         let filename = itemTemplate.filename
         let contentType = itemTemplate.contentType
@@ -169,13 +169,13 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
                 if contentType == .folder {
                     try await transport.mkdir(newPath)
                 } else if let url {
-                    let data = try Data(contentsOf: url)
-                    try await transport.write(newPath, data: data, offset: 0)
+                    try await transport.upload(from: url, to: newPath, progress: progress)
                 } else {
                     try await transport.write(newPath, data: Data(), offset: 0)
                 }
                 let entry = try await transport.stat(newPath)
-                progress.completedUnitCount = 1
+                if progress.totalUnitCount < 0 { progress.totalUnitCount = entry.sizeBytes ?? 0 }
+                progress.completedUnitCount = progress.totalUnitCount
                 handler(ProviderItem(entry: entry, parent: parent), [], false, nil)
             } catch let error as TransportError {
                 handler(nil, [], false, ProviderError.map(error))
@@ -204,7 +204,7 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         nonisolated(unsafe) let handler = completionHandler
-        nonisolated(unsafe) let progress = Progress(totalUnitCount: 1)
+        nonisolated(unsafe) let progress = Progress(totalUnitCount: -1)
         let itemIdentifierRaw = item.itemIdentifier.rawValue
         let parentIdentifier = item.parentItemIdentifier
         let filename = item.filename
@@ -229,12 +229,12 @@ final class FreeDroidProviderExtension: NSObject, NSFileProviderReplicatedExtens
                 }
 
                 if changedFields.contains(.contents), let newContents {
-                    let data = try Data(contentsOf: newContents)
-                    try await transport.write(currentPath, data: data, offset: 0)
+                    try await transport.upload(from: newContents, to: currentPath, progress: progress)
                 }
 
                 let entry = try await transport.stat(currentPath)
-                progress.completedUnitCount = 1
+                if progress.totalUnitCount < 0 { progress.totalUnitCount = entry.sizeBytes ?? 0 }
+                progress.completedUnitCount = progress.totalUnitCount
                 handler(ProviderItem(entry: entry, parent: currentPath.parent ?? .root), [], false, nil)
             } catch let error as TransportError {
                 handler(nil, [], false, ProviderError.map(error))

@@ -125,6 +125,14 @@ actor BridgeHandler {
                 .upload(from: staging, to: path, progress: nil)
             if let parent = path.parent { invalidateListing(deviceID: deviceID, path: parent) }
             return .empty
+        case let .uploadFile(deviceID, path, sourcePath, progressPath):
+            _ = try await sessions.session(for: deviceID.raw).upload(
+                from: URL(fileURLWithPath: sourcePath),
+                to: path,
+                progress: FileProgressSink(url: URL(fileURLWithPath: progressPath))
+            )
+            if let parent = path.parent { invalidateListing(deviceID: deviceID, path: parent) }
+            return .empty
         }
     }
 }

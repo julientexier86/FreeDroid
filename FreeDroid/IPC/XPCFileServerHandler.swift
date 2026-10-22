@@ -72,6 +72,11 @@ actor XPCFileServerHandler {
             defer { try? FileManager.default.removeItem(at: staging) }
             _ = try await transport(for: deviceID).upload(from: staging, to: path, progress: nil)
             return .empty
+        case let .uploadFile(deviceID, path, sourcePath, _):
+            _ = try await transport(for: deviceID).upload(
+                from: URL(fileURLWithPath: sourcePath), to: path, progress: nil
+            )
+            return .empty
         }
     }
 }

@@ -119,6 +119,7 @@ public actor ADBSession: Transport {
     }
 
     public func write(_ path: RemotePath, data: Data, offset: Int64) async throws {
+        try requireUserStoragePath(path)
         guard offset >= 0 else {
             throw TransportError.ioFailure(message: "Negative write offset")
         }
@@ -159,14 +160,18 @@ public actor ADBSession: Transport {
     }
 
     public func mkdir(_ path: RemotePath) async throws {
+        try requireUserStoragePath(path)
         try await runShell(op: "mkdir", command: "mkdir -p \(escape(path.raw))", legacyTimeout: .seconds(5))
     }
 
     public func remove(_ path: RemotePath) async throws {
+        try requireUserStoragePath(path)
         try await runShell(op: "remove", command: "rm -rf \(escape(path.raw))", legacyTimeout: .seconds(30))
     }
 
     public func rename(_ from: RemotePath, to destination: RemotePath) async throws {
+        try requireUserStoragePath(from)
+        try requireUserStoragePath(destination)
         try await runShell(
             op: "rename",
             command: "mv \(escape(from.raw)) \(escape(destination.raw))",
@@ -183,6 +188,7 @@ public actor ADBSession: Transport {
     }
 
     public func upload(from source: URL, to path: RemotePath, progress: TransferProgressSink?) async throws -> Int64 {
+        try requireUserStoragePath(path)
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw TransportError.notFound(RemotePath(raw: source.path))
         }
@@ -193,6 +199,12 @@ public actor ADBSession: Transport {
         }
         await rescanMediaStore(path: path)
         return bytes
+    }
+
+    private func requireUserStoragePath(_ path: RemotePath) throws {
+        guard path.raw == "/sdcard" || path.raw.hasPrefix("/sdcard/") else {
+            throw TransportError.unsupported(reason: "Write access is limited to /sdcard")
+        }
     }
 
     private func legacyFetch(_ path: RemotePath, into destination: URL, progress: TransferProgressSink?) async throws -> Int64 {

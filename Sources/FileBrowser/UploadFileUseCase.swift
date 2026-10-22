@@ -15,13 +15,6 @@ public struct UploadFileUseCase: Sendable {
         }
 
         let destination = destinationFolder.appending(source.lastPathComponent)
-        let handle = try FileHandle(forReadingFrom: source)
-        defer { try? handle.close() }
-
-        var offset: Int64 = 0
-        while let chunk = try handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
-            try await fileRepository.write(destination, data: chunk, offset: offset)
-            offset += Int64(chunk.count)
-        }
+        _ = try await fileRepository.upload(from: source, to: destination, progress: nil)
     }
 }
